@@ -417,17 +417,22 @@ if (!location.search.includes('bare'))
   setTimeout(() => { const b = document.getElementById('play'); if (b && b.textContent === 'play') b.click(); }, 80);
 
 // Живой звук, синхронный с циклом. Штатный плеер играет score лишь один раз
-// и только если звук был включён ДО нажатия play — при автоплее и при вкл.
-// звука посреди сеанса аудио молчит. Поэтому кнопку звука ведём сами:
-// AudioContext создаётся жестом, score перепланируется по аудио-часам на
-// каждом витке. Включение звука на ходу перезапускает цикл с нуля —
-// звук и картинка стартуют вместе (времена Web Audio ≥ 0, «вход с фазы»
-// на свежем контексте невозможен).
+// и только если звук был включён ДО нажатия play. Вместо спрятанной в панели
+// кнопки: (1) пробуем включить звук сразу — если браузер разрешает, посетитель
+// не видит ничего лишнего; (2) иначе показываем fixed-плашку «включить звук»
+// поверх кадра и включаем звук первым же кликом/тапом в любом месте страницы.
+// Ручное выключение в панели уважается (авто больше не возвращает звук).
+// Score перепланируется по аудио-часам на каждом витке; включение звука
+// перезапускает цикл с нуля, чтобы звук и картинка шли вместе.
 (() => {
   if (location.search.includes('bare')) return;
   const playBtn = document.getElementById('play'), sndBtn = document.getElementById('snd'), scrub = document.getElementById('scrub');
   if (!playBtn || !sndBtn || !scrub) return;
-  let ac = null, feed = null, timer = null, nextT0 = 0, on = false;
+  const hint = document.createElement('button');
+  hint.textContent = 'включить звук';
+  hint.style.cssText = 'position:fixed;top:14px;right:14px;z-index:9;background:#f5f0e5;color:#423930;border:2px solid #423930;border-radius:10px;padding:8px 16px;font:600 15px system-ui,sans-serif;cursor:pointer;box-shadow:2px 3px 0 rgba(66,57,48,.35)';
+  document.body.appendChild(hint);
+  let ac = null, feed = null, timer = null, nextT0 = 0, on = false, userMuted = false;
   const playing = () => playBtn.textContent === 'pause';
   const kill = () => { if (feed) { try { feed.disconnect(); } catch (e) {} } feed = null; if (timer) { clearInterval(timer); timer = null; } };
   const schedule = t => { score(ac, t, feed); nextT0 = t + DUR; };
@@ -437,14 +442,29 @@ if (!location.search.includes('bare'))
     schedule(ac.currentTime + .08);
     timer = setInterval(() => { if (nextT0 < ac.currentTime + DUR) schedule(nextT0); }, 250);
   };
-  sndBtn.onclick = e => {
-    on = !on; e.target.textContent = 'sound: ' + (on ? 'on' : 'off');
-    if (!on) return kill();
+  const setOn = v => { on = v; sndBtn.textContent = 'sound: ' + (on ? 'on' : 'off'); hint.style.display = on ? 'none' : ''; };
+  const enable = () => {
+    if (on) return;
+    userMuted = false; setOn(true);
     ac = ac || new AudioContext();
-    ac.resume().then(() => { if (playing()) { playBtn.click(); playBtn.click(); } }); // рестарт цикла вместе со звуком
+    ac.resume().then(() => { if (playing()) { playBtn.click(); playBtn.click(); } else start(); }); // рестарт цикла вместе со звуком
   };
+  sndBtn.onclick = () => { if (on) { userMuted = true; setOn(false); kill(); } else enable(); };
+  hint.onclick = () => enable();
   playBtn.addEventListener('click', () => { if (playing()) { if (on && ac) start(); } else kill(); });
   scrub.addEventListener('input', kill);
+  // любой первый клик/тап/клавиша вне панели плеера включает звук
+  const wake = e => { if (!on && !userMuted && !(e.target.closest && e.target.closest('.bar'))) enable(); };
+  addEventListener('pointerdown', wake);
+  addEventListener('keydown', wake);
+  // попытка честного автозвука: повторным посетителям/разрешающим браузерам можно
+  setTimeout(async () => {
+    try {
+      ac = ac || new AudioContext();
+      await Promise.race([ac.resume(), new Promise(r => setTimeout(r, 400))]);
+      if (ac.state === 'running' && !on && !userMuted) enable();
+    } catch (e) {}
+  }, 350);
 })();
 
 // ── Саундтрек ─────────────────────────────────────────────────────────────────
