@@ -12,7 +12,7 @@
 
 ## Открыть
 
-Просто открыть `fart-film.html` в браузере:
+Просто открыть `index.html` в браузере:
 
 - автоплей и бесконечный цикл; звук включается первым же кликом/тапом
   в любом месте страницы (или плашкой «включить звук» в углу кадра),
@@ -26,14 +26,14 @@
 
 ```bash
 npm i --no-audit --no-fund
-node render.mjs fart-film.html            # out/fart-film-final.mp4 со звуком
-node render.mjs fart-film.html --grid 24  # контактный лист
-node render.mjs fart-film.html --only 85  # отдельный кадр
+node render.mjs index.html            # out/index-final.mp4 со звуком
+node render.mjs index.html --grid 24  # контактный лист
+node render.mjs index.html --only 85  # отдельный кадр
 ```
 
 ## Устройство
 
-- `fart-film.html` — весь фильм: бриф, генератор поз, ключи, экспозиционный
+- `index.html` — весь фильм: бриф, генератор поз, ключи, экспозиционный
   лист, облака/пыль/какашка/вонючие волны/птица, сцена, саундтрек.
 - `core.js`, `studio.js`, `cels.js` — движок из скилла
   [hand-drawn-canvas-animation](https://github.com/alesha-pro/tools/tree/main/skills/hand-drawn-canvas-animation)
