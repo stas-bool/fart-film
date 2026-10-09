@@ -1,0 +1,670 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Поцелуй Посейдона · pencil comedy study</title>
+<style>body{margin:0;background:#242321;display:grid;place-items:center;min-height:100vh}canvas{max-width:100vw;max-height:100vh;object-fit:contain}</style>
+<canvas id="c"></canvas>
+<script src="core.js"></script>
+<script src="studio.js"></script>
+<script src="cels.js"></script>
+<script>
+'use strict';
+// ─────────────────────────────────────────────────────────────────────────────
+// БРИФ
+// Сюжет по гифке «El beso de Poseidón». Какашка выходит, отрывается и летит
+// вниз (камера едет следом), плюхается в воду — корона брызг, круги, бульки.
+// Вода вздувается, бьёт струёй — и из неё встаёт водяной Посейдон: тянет
+// губы, целует попу, довольно ухмыляется и «викторией» щекочет яички —
+// по пальцу на каждое. Склейка: лицо сидящего — блаженство → шок. Склейка:
+// Посейдон в короне, величаво подмигивает и уходит в глубину.
+// Длительность ~11.3 с; 16:9; 1920x1080. Look: pencil + акварельные заливки
+// (цвет из гифки: кремовая бумага, голубая вода, розовая кожа, бирюза в финале).
+// Техника: целые позы-селы на экспозиционных листах, без ригов; заливки —
+// авторские формы под карандашом (drawCel рисует только штрихи). Корень
+// персонажа и камера — отдельные дорожки. Все случайности сеяны.
+// Звук: Web Audio — натуга, шлёп-отрыв, свист падения, плюх, капли, бульки,
+// струя, арфа, чмок, «буп»-щекотка, шок-аккорд, медные фанфары, пузыри.
+// ─────────────────────────────────────────────────────────────────────────────
+const INK = '#423930';
+const pressure = [[0,.1],[.14,.75],[.4,1],[.72,.62],[1,.06]];
+const C = {
+  paper: '#f5f0e5', skin: '#efb5a2', skinLine: '#6e4038',
+  poop: '#8a5734', poopLine: '#3e2717',
+  water: '#5cbde6', waterLine: '#1f4f6e', foam: '#ffffff',
+  face: '#f3cdb0', hair: '#6b4a34', shirt: '#fbfaf6', pink: '#f1cbe9',
+  deep: '#1d5c6c', deepLine: '#0c2b33', king: '#66cdf0',
+};
+
+// ── Геометрия ────────────────────────────────────────────────────────────────
+const mirror = pts => pts.map(([x, y]) => [-x, y]);
+const shift = (pts, dx, dy, s = 1) => pts.map(([x, y]) => [x * s + dx, y * s + dy]);
+const ring = (cx, cy, rx, ry = rx, n = 10) => Array.from({ length: n }, (_, k) => { const a = -Math.PI / 2 + k * TAU / n; return [cx + rx * Math.cos(a), cy + ry * Math.sin(a)]; });
+// волнистая прядь от (x0,y0) до (x1,y1)
+function strand(x0, y0, x1, y1, amp, waves = 1.4, ph = 0, n = 9) {
+  const dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy), nx = -dy / L, ny = dx / L, p = [];
+  for (let k = 0; k <= n; k++) { const u = k / n, o = amp * Math.sin(u * TAU * waves + ph) * Math.min(1, u * 3); p.push([x0 + dx * u + nx * o, y0 + dy * u + ny * o]); }
+  return p;
+}
+// капля остриём вверх, повёрнутая на rot
+function teardrop(x, y, s, rot = 0) {
+  const p = [[0, -1.9 * s]];
+  for (let k = 0; k <= 8; k++) { const a = -Math.PI / 6 + k / 8 * Math.PI * 4 / 3; p.push([s * Math.cos(a), s * Math.sin(a)]); }
+  const c = Math.cos(rot), sn = Math.sin(rot);
+  return p.map(([px, py]) => [x + px * c - py * sn, y + px * sn + py * c]);
+}
+// волнистый контур: ресемплинг + синусоида по нормали (вода, борода)
+function wavify(pts, amp, period = 60, ph = 0, close = true) {
+  const out = [], n = pts.length, segs = close ? n : n - 1; let d = 0;
+  for (let i = 0; i < segs; i++) {
+    const a = pts[i], b = pts[(i + 1) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]), m = Math.max(1, Math.round(L / 22)), nx = -(b[1] - a[1]) / L, ny = (b[0] - a[0]) / L;
+    for (let k = 0; k < m; k++) { const u = k / m, o = amp * Math.sin((d + L * u) / period * TAU + ph); out.push([a[0] + (b[0] - a[0]) * u + nx * o, a[1] + (b[1] - a[1]) * u + ny * o]); }
+    d += L;
+  }
+  if (!close) out.push(pts[n - 1].slice());
+  return out;
+}
+
+// ── Рисунок = заливки (авторские формы) + карандашный сел ────────────────────
+// fills: {pts, color, al, corner}; strokes: как в cels.js, цвет по умолчанию — line.
+const D = {};
+function drawing(id, { fills = [], strokes = [], line = INK }) {
+  const cel = compileCel({ strokes: strokes.map(s => ({ pressure, width: 4, opacity: .95, ...s })) }, { id });
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const p of [...fills.flatMap(f => f.pts), ...strokes.flatMap(s => s.points)]) { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); }
+  D[id] = { id, fills, cel, line, box: [x0 - 24, y0 - 24, x1 - x0 + 48, y1 - y0 + 48] };
+  return D[id];
+}
+const ln = (id, points, width = 4, opacity = .95, extra = {}) => ({ id, points, width, opacity, ...extra });
+
+// ── Спрайты: конечный набор рисунков, кэш по id/scale ────────────────────────
+const SS = 1.6, sprites = new Map();
+function sprite(id) {
+  const key = id + '/' + S;
+  if (!sprites.has(key)) {
+    const d = D[id]; if (!d) throw new Error('no drawing ' + id);
+    const [bx, by, bw, bh] = d.box, cv = document.createElement('canvas');
+    cv.width = Math.ceil(bw * S * SS); cv.height = Math.ceil(bh * S * SS);
+    const g = cv.getContext('2d');
+    g.scale(S * SS, S * SS); g.translate(-bx, -by);
+    d.fills.forEach((f, k) => {
+      const path = curvePath(f.pts, true, f.corner ?? 1.1);
+      g.save(); g.globalAlpha = f.al ?? .94; g.fillStyle = f.color; g.fill(path); g.restore();
+      wash(g, path, shade(f.color, .18), { al: .45, off: 3, seed: strokeSeed(id) % 997 + k, blend: 'source-over' });
+    });
+    // два прохода одного и того же села: линия плотнее, метки те же
+    drawCel(g, d.cel, { material: 'pencil', color: d.line }); drawCel(g, d.cel, { material: 'pencil', color: d.line, opacity: .8 });
+    sprites.set(key, cv);
+  }
+  return sprites.get(key);
+}
+function drawSpr(c, id, x = 0, y = 0, o = {}) {
+  const { alpha = 1, scale = 1, rot = 0 } = o, s = sprite(id), [bx, by, bw, bh] = D[id].box;
+  c.save(); c.globalAlpha *= alpha; c.translate(x, y); c.rotate(rot); c.scale(scale, scale);
+  c.drawImage(s, bx, by, bw, bh); c.restore();
+}
+// последовательность рисунков: [[id, кадры], …] → экспозиционный лист
+const seq = rows => exposureSheet(rows.map(([id, frames]) => ({ id, frames })), D, 24);
+const grainOver = (c, seed, al = .05) => grain(c, rectPath(0, 0, W, H), [0, 0, W, H], 1600, '#3b3026', al, seed, 1.6);
+
+// ═════════════════════════════════════════════════════════════════════════════
+// РИСУНКИ
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Попа снизу: две щеки свисают, между ними складка; (0,0) — точка выхода.
+(() => {
+  const L = [[-1250, -300], [-1040, -70], [-780, 70], [-520, 128], [-290, 116], [-130, 70], [-34, 18], [0, 0]];
+  const R = mirror(L).reverse();
+  drawing('butt', {
+    line: C.skinLine,
+    fills: [{ pts: [...L, ...R.slice(1), [1250, -760], [-1250, -760]], color: C.skin, corner: .6 }],
+    strokes: [
+      ln('cheekL', L, 6.5, .95, { corner: 1.4 }), ln('cheekR', R, 6.5, .95, { corner: 1.4 }),
+      ln('crease', [[0, -4], [6, -70], [-4, -150], [3, -240]], 3.4, .7),
+      ln('dimpleL', [[-420, -60], [-380, -40], [-340, -58]], 2.4, .4), ln('dimpleR', [[420, -60], [380, -40], [340, -58]], 2.4, .4),
+      ln('roundL', [[-700, -10], [-560, 40], [-380, 58]], 2.6, .35), ln('roundR', [[700, -10], [560, 40], [380, 58]], 2.6, .35),
+    ],
+  });
+})();
+
+// Какашка: колбаска с перетяжками. (0,0) — верх; attached — срез под попой.
+function poop(id, Lp, { attached = true, sx = 1, sy = 1 } = {}) {
+  const R = 27 * sx, n = Math.max(8, Math.round(Lp / 14)), left = [], right = [], cx = y => 7 * Math.sin(y / Lp * 3.2 + .5) * Math.min(1, Lp / 140);
+  const hw = y => {
+    let w = R * (1 + .09 * Math.sin(y / 26 * Math.PI));
+    if (y > Lp - R) w *= Math.sqrt(Math.max(0, 1 - ((y - (Lp - R)) / R) ** 2));
+    if (!attached && y < R) w *= Math.sqrt(Math.max(0, 1 - ((R - y) / R) ** 2));
+    return w;
+  };
+  for (let k = 0; k <= n; k++) { const y = k / n * Lp; left.push([cx(y) - hw(y), y * sy]); right.push([cx(y) + hw(y), y * sy]); }
+  const contour = attached ? [...left, ...right.slice(0, -1).reverse()] : [...left, ...right.slice(1, -1).reverse()];
+  const strokes = [ln('contour', contour, 5.5, .97, { close: !attached, corner: 1.5 })];
+  for (let y = 46, j = 0; y < Lp - 26; y += 46, j++) {
+    const w = hw(y), x = cx(y);
+    strokes.push(ln('seg' + j, [[x - w + 3, (y - 4) * sy], [x - w * .2, (y + 5) * sy], [x + w * .45, (y + 2) * sy]], 3.2, .8));
+    strokes.push(ln('shine' + j, [[x + w * .45, (y + 14) * sy], [x + w * .55, (y + 32) * sy]], 3.4, .7, { color: '#d9a982' }));
+  }
+  if (!attached) strokes.push(ln('tip', [[cx(0) - 8, 6], [cx(0) - 2, -14], [cx(0) + 10, -10]], 3.6, .9));
+  drawing(id, { line: C.poopLine, fills: [{ pts: contour, color: C.poop, corner: 1.5 }], strokes });
+}
+poop('poopE1', 46); poop('poopE2', 118); poop('poopE3', 196); poop('poopE4', 252);
+poop('poopDrop', 258, { attached: false });
+poop('poopFall', 258, { attached: false, sx: .86, sy: 1.14 });
+
+// Скорость: вертикальные штрихи, три рисунка по очереди
+['A', 'B', 'C'].forEach((k, j) => drawing('speed' + k, {
+  strokes: Array.from({ length: 8 }, (_, i) => {
+    const side = i % 2 ? 1 : -1, x = side * (70 + hash(i, j + 3) * 190), y = -200 + hash(i, j + 7) * 300, L = 140 + hash(i, j + 11) * 220;
+    return ln('s' + i, [[x, y], [x + side * 4, y + L * .5], [x, y + L]], 2.6, .45);
+  }),
+}));
+
+// Вода: поверхность (0,0) у левого края, заливка вниз. bulge — купол перед струёй.
+function water(id, bulge = 0) {
+  const top = [];
+  for (let x = -80; x <= 2000; x += 40) top.push([x, -bulge * Math.exp(-(((x - 960) / 150) ** 2)) + 3 * Math.sin(x / 70)]);
+  const ticks = [[300, 120], [620, 230], [1250, 160], [1580, 260], [880, 330], [180, 300], [1420, 420]].map(([x, y], i) =>
+    ln('tick' + i, [[x - 40, y], [x - 12, y - 6], [x + 20, y - 4], [x + 44, y + 2]], 2.6, .5));
+  const strokes = [ln('surface', top, 5.5, .95), ...ticks];
+  if (bulge) strokes.push(ln('dome', [[960 - 90, -bulge * .45], [960 - 40, -bulge * .78], [960 + 10, -bulge * .9]], 3, .6, { color: C.foam }));
+  drawing(id, { line: C.waterLine, fills: [{ pts: [...top, [2000, 1300], [-80, 1300]], color: C.water, al: .86, corner: .4 }], strokes });
+}
+water('water'); water('bulge1', 34); water('bulge2', 82);
+
+// Корона брызг: k — фаза 0..1
+function crown(id, w, h, spikes = 7, ph = 0) {
+  const pts = [[-w - 50, 6]];
+  for (let i = 0; i <= spikes * 2; i++) {
+    const u = i / (spikes * 2), x = -w + u * 2 * w, tip = i % 2 === 1, env = Math.sin(Math.PI * (.15 + .7 * u));
+    pts.push([x + (tip ? (x / w) * 26 : 0), tip ? -h * env * (.75 + .5 * hash(i, ph)) : -h * env * .3]);
+  }
+  pts.push([w + 50, 6]);
+  const drops = [];
+  for (let i = 1; i < spikes * 2; i += 4) { const p = pts[i + 1]; drops.push(ln('drop' + i, teardrop(p[0] + (p[0] / w) * 20, p[1] - 34, 8, (p[0] / w) * .6), 3, .9, { close: true, corner: 1.2 })); }
+  drawing(id, {
+    line: C.waterLine,
+    fills: [{ pts, color: C.water, al: .9, corner: .9 }],
+    strokes: [ln('crown', pts, 5, .95, { corner: .9 }), ...drops,
+      ln('shine', [[-w * .5, -h * .2], [-w * .42, -h * .42]], 3.4, .8, { color: C.foam })],
+  });
+}
+crown('crown1', 70, 70, 5, 1); crown('crown2', 120, 170, 7, 2); crown('crown3', 170, 230, 7, 3); crown('crown4', 220, 150, 8, 4); crown('crown5', 260, 60, 8, 5);
+
+drawing('drop', { line: C.waterLine, fills: [{ pts: teardrop(0, 0, 10), color: C.water, corner: 1.2 }], strokes: [ln('d', teardrop(0, 0, 10), 3, .9, { close: true, corner: 1.2 })] });
+drawing('dropR', { line: C.waterLine, fills: [{ pts: ring(0, 0, 9, 11, 8), color: C.water }], strokes: [ln('d', ring(0, 0, 9, 11, 8), 3, .9, { close: true })] });
+[150, 250, 360, 470].forEach((r, i) => drawing('ripple' + i, {
+  line: C.waterLine,
+  strokes: [ln('front', [[-r, 0], [-r * .7, r * .1], [0, r * .14], [r * .7, r * .1], [r, 0]], 3.6 - i * .5, .8 - i * .12),
+    ln('back', [[-r * .9, -4], [-r * .4, -r * .08], [r * .4, -r * .08], [r * .9, -4]], 2.4, .45 - i * .08)],
+}));
+drawing('bubble', { line: C.waterLine, fills: [{ pts: ring(0, 0, 16), color: '#bfe6f6' }], strokes: [ln('b', ring(0, 0, 16), 3.4, .9, { close: true }), ln('glint', [[-8, -6], [-3, -11]], 2.6, .9, { color: C.foam })] });
+drawing('pop', { line: C.waterLine, strokes: [0, 1, 2, 3, 4, 5].map(k => { const a = k / 6 * TAU - Math.PI / 2; return ln('p' + k, [[Math.cos(a) * 16, Math.sin(a) * 16], [Math.cos(a) * 30, Math.sin(a) * 30]], 3, .8); }) });
+
+// Струя: вогнутые бока, широкое основание, рваная верхушка
+function jet(id, h) {
+  const side = [[-360, 6], [-210, -16], [-120, -60], [-72, -150], [-54, -260], [-46, -Math.max(280, h * .55)], [-40, -h]];
+  const top = [[-28, -h - 40], [-10, -h - 8], [8, -h - 56], [24, -h - 6], [42, -h - 30]];
+  const pts = [...side, ...top, ...mirror(side).reverse()];
+  const strokes = [ln('jet', pts, 5.5, .95, { corner: 1 })];
+  for (let i = 0; i < 4; i++) strokes.push(ln('flow' + i, strand(-24 + i * 16, -h + 40, -30 + i * 20, -120, 4, 2.5, i), 2.6, .5));
+  strokes.push(ln('shine', [[-30, -h * .7], [-34, -h * .4]], 4, .8, { color: C.foam }));
+  for (let i = 0; i < 3; i++) strokes.push(ln('spray' + i, teardrop(-70 + i * 70, -h - 70 - i * 20, 7, (i - 1) * .5), 3, .85, { close: true, corner: 1.2 }));
+  drawing(id, { line: C.waterLine, fills: [{ pts, color: C.water, al: .92, corner: 1 }], strokes });
+}
+jet('jet1', 240); jet('jet2', 560); jet('jet3', 980); jet('jet4', 1500);
+
+// Водяной Посейдон в профиль, лицом влево (на экране повёрнут вверх-влево).
+// lips: pucker | smile; eye: shut | smug; stream: волосы/борода стекают вниз при подъёме.
+function poseidonSide(id, { lips = 'pucker', eye = 'shut', brow = 'up', stream = 0, tilt = 0 }) {
+  const st = stream * 70;
+  const beard = [[-20, 1500], [-40, 600], [-62, 500], [-84, 455 + st * .4], [-70, 430], [-108, 400 + st * .3], [-128, 340], [-150, 280], [-140, 215], [-150, 160], [-132, 118]];
+  const mouth = lips === 'pucker'
+    ? [[-138, 108], [-178, 106], [-214, 96], [-236, 80], [-222, 67], [-238, 54], [-220, 38], [-178, 40], [-152, 46]]
+    : [[-134, 106], [-140, 96], [-136, 86], [-128, 79], [-138, 70], [-142, 58], [-134, 50]];
+  const face = [[-128, 46], [-146, 42], [-166, 32], [-154, 12], [-126, -20], [-112, -44], [-122, -62], [-116, -96], [-96, -150], [-46, -192], [28, -204]];
+  const hair = [[100, -208], [180, -186], [250, -140], [320, -80], [384, -20 + st], [430, 40 + st * 1.4], [372, 26 + st], [404, 96 + st * 1.2], [338, 92 + st * .5], [300, 140], [360, 220], [440, 330], [500, 480], [520, 1500]];
+  const outline = [...beard, ...mouth, ...face, ...hair];
+  const by = brow === 'up' ? -12 : 0;
+  const strokes = [
+    ln('outline', outline, 6.5, .97, { corner: 1.25 }),
+    ln('brow', [[-122, -72 + by], [-100, -84 + by * 1.3], [-72, -80 + by], [-50, -70 + by * .6]], 7, .95),
+    ln('nostril', [[-150, 30], [-140, 26], [-134, 32]], 3, .8),
+    ln('stache', [[-138, 50], [-112, 56], [-88, 70], [-76, 96], [-82, 126]], 4.6, .9),
+    ln('stache2', [[-122, 56], [-98, 76], [-94, 106]], 3, .7),
+    ln('beard1', strand(-112, 128, -100, 380 + st * .3, 9, 1.5, 0), 3.4, .7),
+    ln('beard2', strand(-82, 140, -64, 430 + st * .4, 10, 1.3, 1), 3.4, .7),
+    ln('beard3', strand(-50, 150, -26, 400, 9, 1.6, 2), 3, .6),
+    ln('hair1', strand(-30, -176, 300, -66 + st * .6, 9, 1.2, 0), 3.4, .7),
+    ln('hair2', strand(20, -140, 350, 4 + st, 11, 1.4, 1), 3.4, .7),
+    ln('hair3', strand(50, -92, 310, 84 + st, 9, 1.3, 2), 3.2, .6),
+    ln('hair4', strand(70, -30, 270, 140, 7, 1, .7), 3, .55),
+    ln('body1', [[200, 300], [260, 322], [300, 362]], 3, .5),
+    ln('body2', [[120, 430], [190, 448], [240, 490]], 3, .45),
+    ln('hi1', [[-74, -172], [-100, -132]], 5, .85, { color: C.foam }),
+    ln('hi2', [[210, -168], [262, -128]], 5, .8, { color: C.foam }),
+    ln('hi3', [[-146, 210], [-142, 252]], 4, .75, { color: C.foam }),
+  ];
+  if (eye === 'shut') strokes.push(ln('eye', [[-112, -48], [-94, -36], [-74, -44]], 6.5, .97), ln('lash', [[-96, -37], [-100, -26]], 3.4, .8), ln('lash2', [[-84, -39], [-84, -28]], 3, .7));
+  else strokes.push(ln('lid', [[-114, -50], [-96, -58], [-74, -50]], 5.5, .95), ln('pupil', ring(-102, -45, 5, 5, 6), 4, .95, { close: true }), ln('under', [[-108, -36], [-92, -32], [-78, -36]], 2.6, .55));
+  if (lips === 'pucker') strokes.push(ln('cheek', [[-108, 12], [-96, 36], [-104, 60]], 3.2, .6), ln('seam', [[-222, 67], [-190, 70], [-164, 78]], 3.4, .85), ln('lipLine', [[-206, 92], [-186, 86]], 2.6, .5));
+  else strokes.push(ln('smile', [[-136, 78], [-120, 72], [-104, 54], [-100, 34]], 3.6, .8), ln('cheek', [[-104, -2], [-86, 8]], 3, .6));
+  // запрокинуть голову на шее: выше подбородка — целиком, к плечам — на нет
+  const neck = pts => pts.map(([x, y]) => {
+    const a = tilt * clamp((330 - y) / 220, 0, 1), c = Math.cos(a), s = Math.sin(a), dx = x - 150, dy = y - 250;
+    return [150 + dx * c - dy * s, 250 + dx * s + dy * c];
+  });
+  strokes.forEach(s => { s.points = neck(s.points); });
+  drawing(id, { line: C.waterLine, fills: [{ pts: neck([...outline, [520, 1540], [-20, 1540]]), color: C.water, corner: 1.25 }], strokes });
+  D[id].lips = neck([[-236, 64]])[0];
+}
+poseidonSide('psRise', { lips: 'pucker', eye: 'shut', stream: 1, tilt: .15 });
+poseidonSide('psReach', { lips: 'pucker', eye: 'shut', stream: .4, tilt: .25 });
+poseidonSide('psKiss', { lips: 'pucker', eye: 'shut', stream: 0, tilt: .32 });
+poseidonSide('psSmug', { lips: 'smile', eye: 'smug', brow: 'relax', stream: 0 });
+
+// Следы поцелуя: мокрое пятно, «чмок»-штрихи, сердечко
+drawing('wet', { line: C.waterLine, fills: [{ pts: wavify(ring(0, 0, 34, 16, 10), 3, 30), color: '#8ea7c8', al: .7 }], strokes: [ln('w', wavify(ring(0, 0, 34, 16, 10), 3, 30), 2.6, .6, { close: true })] });
+drawing('smooch', { line: C.waterLine, strokes: [-1, -.4, .3, 1].map((a, k) => ln('l' + k, [[Math.sin(a) * 56, Math.cos(a) * 30], [Math.sin(a) * 96, Math.cos(a) * 54]], 3.6, .8)) });
+const heart = [[0, 30], [-26, 6], [-34, -12], [-24, -28], [-8, -26], [0, -14], [8, -26], [24, -28], [34, -12], [26, 6]];
+drawing('heart', { line: '#a8424a', fills: [{ pts: heart, color: '#f07c8a', corner: 1 }], strokes: [ln('h', heart, 4, .95, { close: true, corner: 1 })] });
+
+// Водяная рука: «виктория»; L/R — длина левого/правого пальца (вытянут > 1, поджат < 1).
+const HAND = {
+  armL: [[-70, 620], [-62, 320], [-52, 160], [-52, 60], [-64, 0], [-72, -60], [-64, -98], [-44, -112], [-32, -116]],
+  V: [[-40, -150], [-56, -220], [-62, -252], [-52, -272], [-34, -268], [-24, -236], [-10, -170], [-4, -136], [4, -176], [20, -240], [34, -268], [52, -266], [56, -246], [42, -180], [30, -118]],
+  armR: [[52, -96], [66, -60], [60, -20], [46, 20], [44, 60], [46, 160], [58, 320], [70, 620]],
+};
+function hand(id, { L = 1, R = 1 } = {}) {
+  // палец тянется или поджимается от своего основания (y = -150)
+  const curl = pts => pts.map(([x, y]) => y >= -150 ? [x, y] : [x, -150 + (y + 150) * (x < -2 ? L : R)]);
+  const outline = [...HAND.armL, ...curl(HAND.V), ...HAND.armR];
+  const strokes = [
+    ln('outline', outline, 6.5, .97, { corner: 1.2 }),
+    ln('knuckles', [[-66, -62], [-40, -76], [-16, -82], [8, -84]], 3.4, .75),
+    ln('thumb', [[58, -58], [30, -54], [4, -60], [-16, -58]], 4.4, .9),
+    ln('arm1', strand(-20, 120, -30, 600, 7, 1.2, 0), 3, .5),
+    ln('arm2', strand(20, 200, 30, 600, 6, 1, 1), 3, .45),
+    ln('hi', [[-46, 40], [-44, 140]], 5, .8, { color: C.foam }),
+    ln('nailA', curl([[-58, -254], [-48, -262], [-38, -256]]), 2.6, .7), ln('nailB', curl([[38, -256], [46, -258], [52, -250]]), 2.6, .7),
+  ];
+  drawing(id, { line: C.waterLine, fills: [{ pts: [...outline, [70, 660], [-70, 660]], color: C.water, corner: 1.2 }], strokes });
+}
+hand('handV'); hand('handVL', { L: 1.15, R: .72 }); hand('handVR', { L: .72, R: 1.15 });
+// Яички: свисают из складки попы; (0,0) — точка подвеса. sqL/sqR — поджалось левое/правое от щекотки.
+function balls(id, sqL = 0, sqR = 0) {
+  const k = ([x, y]) => [x, y * (1 - (x < 0 ? sqL : sqR) * clamp(Math.abs(x) / 30, 0, 1))];
+  const out = [[-58, -10], [-70, 40], [-86, 100], [-80, 150], [-56, 178], [-24, 176], [-4, 158], [0, 150], [4, 158], [26, 180], [60, 182], [84, 154], [90, 104], [74, 44], [60, -10]].map(k);
+  drawing(id, {
+    line: C.skinLine,
+    fills: [{ pts: out, color: '#e39d8c', corner: 1.1 }],
+    strokes: [
+      ln('sac', out, 6, .95, { corner: 1.1 }),
+      ln('raphe', [[0, 10], [3, 70], [-2, 128], [0, 148]].map(k), 3.2, .7),
+      ln('wL1', [[-62, 88], [-46, 98], [-30, 92]].map(k), 2.6, .5), ln('wL2', [[-68, 128], [-50, 138]].map(k), 2.6, .45),
+      ln('wR1', [[40, 94], [58, 102], [72, 94]].map(k), 2.6, .5), ln('wR2', [[50, 142], [68, 136]].map(k), 2.6, .45),
+      ln('hairL', [[-82, 120], [-98, 116], [-102, 102]].map(k), 2.4, .6), ln('hairR', [[88, 128], [104, 126], [108, 112]].map(k), 2.4, .6),
+    ],
+  });
+}
+balls('balls'); balls('ballsL', .06, 0); balls('ballsR', 0, .06);
+drawing('boop', { line: C.skinLine, strokes: [-1.2, -.5, .5, 1.2].map((a, k) => ln('b' + k, [[Math.sin(a) * 40, -Math.cos(a) * 30 + 30], [Math.sin(a) * 74, -Math.cos(a) * 58 + 30]], 3.4, .8)) });
+
+// Лицо сидящего (вид снизу): calm — блаженство, shock — глаза-блюдца.
+function face(id, mood) {
+  const head = [[0, -240], [95, -222], [160, -160], [178, -60], [176, 40], [160, 120], [120, 190], [60, 232], [0, 244], [-60, 232], [-120, 190], [-160, 120], [-176, 40], [-178, -60], [-160, -160], [-95, -222]];
+  const hair = [[-184, -40], [-188, -130], [-150, -206], [-80, -252], [0, -266], [90, -252], [160, -202], [190, -120], [186, -40], [168, -66], [160, -120], [118, -152], [40, -168], [8, -148], [-30, -170], [-110, -152], [-160, -112], [-170, -52]];
+  const earL = [[-172, -24], [-206, -40], [-216, 4], [-204, 46], [-174, 52]];
+  const shirt = [[-560, 640], [-500, 400], [-300, 336], [-110, 304], [0, 350], [110, 304], [300, 336], [500, 400], [560, 640]];
+  const strokes = [
+    ln('head', head, 6, .97, { close: true, corner: 1.3 }), ln('hair', hair, 5.5, .95, { close: true, corner: 1 }),
+    ln('part', [[8, -150], [30, -200], [60, -236]], 3, .6),
+    ln('earL', earL, 5, .9), ln('earR', mirror(earL), 5, .9), ln('earLi', [[-196, -8], [-186, 10], [-196, 28]], 2.6, .5), ln('earRi', [[196, -8], [186, 10], [196, 28]], 2.6, .5),
+    ln('neckL', [[-72, 214], [-78, 324]], 5, .9), ln('neckR', [[72, 214], [78, 324]], 5, .9),
+    ln('shirt', shirt, 5.5, .9, { corner: .8 }), ln('collarL', [[-110, 304], [-56, 372], [0, 350]], 4.4, .85), ln('collarR', [[110, 304], [56, 372], [0, 350]], 4.4, .85),
+    ln('nose', [[-2, 0], [12, 52], [0, 64], [-12, 58]], 4.4, .9),
+  ];
+  const fills = [
+    { pts: [[-76, 190], [76, 190], [80, 340], [-80, 340]], color: shade(C.face, .08), corner: .3 },
+    { pts: shirt.concat([[560, 700], [-560, 700]]), color: C.shirt, corner: .8 },
+    { pts: earL, color: C.face }, { pts: mirror(earL), color: C.face },
+    { pts: head, color: C.face, corner: 1.3 }, { pts: hair, color: C.hair, corner: 1 },
+  ];
+  if (mood === 'calm') {
+    strokes.push(ln('browL', [[-112, -64], [-80, -74], [-46, -68]], 5, .9), ln('browR', mirror([[-112, -64], [-80, -74], [-46, -68]]), 5, .9),
+      ln('eyeL', [[-108, -12], [-80, -4], [-50, -10]], 5, .95), ln('eyeR', mirror([[-108, -12], [-80, -4], [-50, -10]]), 5, .95),
+      ln('mouth', [[-54, 120], [0, 122], [54, 117]], 5, .95),
+      ln('blushL', [[-130, 50], [-110, 62], [-92, 52]], 3, .45, { color: '#c46a6a' }), ln('blushR', [[130, 50], [110, 62], [92, 52]], 3, .45, { color: '#c46a6a' }));
+  } else {
+    strokes.push(ln('browL', [[-116, -100], [-82, -116], [-46, -104]], 5, .9), ln('browR', mirror([[-116, -100], [-82, -116], [-46, -104]]), 5, .9),
+      ln('eyeL', ring(-78, -14, 34, 34, 12), 5, .95, { close: true }), ln('eyeR', ring(78, -14, 34, 34, 12), 5, .95, { close: true }),
+      ln('pupL', ring(-78, -12, 7, 7, 6), 5, .95, { close: true }), ln('pupR', ring(78, -12, 7, 7, 6), 5, .95, { close: true }),
+      ln('mouth', ring(0, 134, 15, 20, 9), 5, .95, { close: true }),
+      ln('wrinkle', [[-30, -150], [0, -156], [30, -150]], 2.6, .5));
+    fills.push({ pts: ring(-78, -14, 34, 34, 12), color: '#ffffff' }, { pts: ring(78, -14, 34, 34, 12), color: '#ffffff' },
+      { pts: ring(-78, -12, 7, 7, 6), color: INK }, { pts: ring(78, -12, 7, 7, 6), color: INK }, { pts: ring(0, 134, 15, 20, 9), color: '#7a3a36' });
+  }
+  drawing(id, { fills, strokes });
+}
+face('calm', 'calm'); face('shock', 'shock');
+drawing('sweat1', { line: C.waterLine, fills: [teardrop(-250, -250, 13, -.5), teardrop(260, -230, 13, .5)].map(pts => ({ pts, color: '#a9dcf3', corner: 1.2 })),
+  strokes: [ln('a', teardrop(-250, -250, 13, -.5), 3.6, .9, { close: true, corner: 1.2 }), ln('b', teardrop(260, -230, 13, .5), 3.6, .9, { close: true, corner: 1.2 })] });
+drawing('sweat2', { line: C.waterLine, fills: [teardrop(-280, -120, 12, -.8), teardrop(-180, -330, 12, -.2), teardrop(290, -110, 12, .8), teardrop(170, -340, 12, .2)].map(pts => ({ pts, color: '#a9dcf3', corner: 1.2 })),
+  strokes: [teardrop(-280, -120, 12, -.8), teardrop(-180, -330, 12, -.2), teardrop(290, -110, 12, .8), teardrop(170, -340, 12, .2)].map((p, k) => ln('d' + k, p, 3.6, .9, { close: true, corner: 1.2 })) });
+drawing('shockLines', { strokes: Array.from({ length: 10 }, (_, k) => { const a = -Math.PI + k / 9 * Math.PI; return ln('s' + k, [[Math.cos(a) * 300, Math.sin(a) * 330 - 20], [Math.cos(a) * 370, Math.sin(a) * 400 - 20]], 4, .7); }) });
+
+// Посейдон в короне анфас. boil — второй рисунок прядей (вода течёт); wink — подмигивание.
+function king(id, { wink = false, ph = 0 }) {
+  const body = [[-780, 760], [-650, 420], [-480, 300], [-300, 240], [300, 240], [480, 300], [650, 420], [780, 760]];
+  const hairL = wavify([[-168, -200], [-246, -150], [-292, -60], [-302, 40], [-330, 140], [-300, 254], [-200, 244], [-172, 100], [-162, -60]], 6, 70, ph);
+  const faceS = [[-165, -196], [165, -196], [176, -80], [166, 0], [120, 40], [-120, 40], [-166, 0], [-176, -80]];
+  const beardL = [[-176, -60], [-202, 40], [-196, 150], [-162, 262], [-102, 362], [-42, 432], [0, 474]];
+  const beard = wavify([...beardL, ...mirror(beardL).reverse().slice(1), [130, 10], [60, 30], [0, 40], [-60, 30], [-130, 10]], 7, 64, ph);
+  const crownP = [[-172, -180], [-186, -262], [-252, -372], [-150, -284], [-112, -412], [-50, -292], [0, -484], [50, -292], [112, -412], [150, -284], [252, -372], [186, -262], [172, -180]];
+  const eyeL = wink ? [ln('eyeL', [[-124, -76], [-92, -66], [-58, -76]], 5.5, .95)]
+    : [ln('lidL', [[-124, -82], [-92, -92], [-56, -82]], 6, .95), ln('pupL', ring(-90, -76, 8, 8, 6), 5, .95, { close: true }), ln('bagL', [[-118, -60], [-88, -56], [-62, -62]], 2.6, .5)];
+  const strokes = [
+    ln('shL', body.slice(0, 4), 6.5, .95, { corner: 1 }), ln('shR', mirror(body.slice(0, 4)), 6.5, .95, { corner: 1 }),
+    ln('hairL', hairL.slice(0, Math.round(hairL.length * .7)), 5.5, .9), ln('hairR', mirror(hairL.slice(0, Math.round(hairL.length * .7))), 5.5, .9),
+    ln('beard', beard.slice(0, Math.round(beard.length * .8)), 6, .95),
+    ln('crown', crownP, 6.5, .97, { corner: .7 }), ln('band', [[-184, -248], [0, -258], [184, -248]], 4.6, .9),
+    ln('tShaft', [[0, -196], [0, -338]], 4.6, .95), ln('tHead', [[-30, -334], [-30, -300], [30, -300], [30, -334]], 4.6, .95, { corner: .5 }),
+    ln('tTipL', [[-38, -322], [-30, -342], [-22, -322]], 3.4, .9, { corner: .5 }), ln('tTipC', [[-8, -340], [0, -360], [8, -340]], 3.4, .9, { corner: .5 }), ln('tTipR', [[22, -322], [30, -342], [38, -322]], 3.4, .9, { corner: .5 }),
+    ln('browL', wavify([[-138, -112], [-92, -126], [-40, -102]], 4, 30, ph, false), 8, .95), ln('browR', wink ? wavify([[138, -126], [92, -140], [40, -112]], 4, 30, ph, false) : mirror(wavify([[-138, -112], [-92, -126], [-40, -102]], 4, 30, ph, false)), 8, .95),
+    ...eyeL, ln('lidR', [[124, -82], [92, -92], [56, -82]], 6, .95), ln('pupR', ring(90, -76, 8, 8, 6), 5, .95, { close: true }), ln('bagR', [[118, -60], [88, -56], [62, -62]], 2.6, .5),
+    ln('nose', [[-6, -84], [-16, -24], [-30, 0], [-14, 12], [0, 6], [14, 12], [30, 0]], 5, .95, { corner: 1 }),
+    ln('stacheL', wavify([[-4, 24], [-44, 18], [-96, 44], [-132, 96], [-146, 150]], 3, 40, ph, false), 5.5, .95),
+    ln('stacheR', mirror(wavify([[-4, 24], [-44, 18], [-96, 44], [-132, 96], [-146, 150]], 3, 40, ph, false)), 5.5, .95),
+    ln('mouth', wink ? [[-34, 66], [0, 64], [30, 58], [44, 48]] : [[-34, 64], [0, 60], [34, 64]], 4.4, .9),
+    ...[-110, -60, 0, 60, 110].map((x, k) => ln('beard' + k, strand(x * .9, 90 + Math.abs(x) * .3, x * .4, 380 - Math.abs(x) * .9, 8, 1.4, ph + k), 3.4, .65)),
+    ...[-1, 1].flatMap(s => [0, 1].map(k => ln('lock' + (s > 0 ? 'R' : 'L') + k, strand(s * (190 + k * 40), -150 + k * 60, s * (260 + k * 30), 180 + k * 40, 8, 1.3, ph + k), 3.2, .6))),
+    ln('chest1', [[-420, 360], [-360, 420], [-330, 520]], 3, .5), ln('chest2', mirror([[-420, 360], [-360, 420], [-330, 520]]), 3, .5),
+    ln('hi1', [[-120, -170], [-60, -178]], 5, .85, { color: '#e8fbff' }), ln('hi2', [[-210, -320], [-180, -290]], 4, .8, { color: '#e8fbff' }),
+  ];
+  const fill = (pts, k = 1.2) => ({ pts, color: C.king, al: .97, corner: k });
+  drawing(id, { line: C.deepLine, fills: [fill([...body, [780, 800], [-780, 800]], 1), fill(hairL), fill(mirror(hairL)), fill(faceS), fill(beard), fill(crownP, .7)], strokes });
+}
+king('kingA', { ph: 0 }); king('kingB', { ph: 1.3 }); king('kingWink', { wink: true, ph: .6 });
+drawing('kBubble', { line: C.deepLine, fills: [{ pts: ring(0, 0, 14), color: '#8fdcf5' }], strokes: [ln('b', ring(0, 0, 14), 3.4, .9, { close: true }), ln('g', [[-7, -5], [-2, -10]], 2.6, .9, { color: '#e8fbff' })] });
+drawing('sparkle', { line: '#f7f1c8', strokes: [ln('v', [[0, -34], [0, 34]], 5, .95), ln('h', [[-34, 0], [34, 0]], 5, .95), ln('d1', [[-14, -14], [14, 14]], 3, .7), ln('d2', [[-14, 14], [14, -14]], 3, .7)] });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ПЛАНЫ
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── План 1: выход, падение, плюх, струя ──────────────────────────────────────
+const BUTT1 = [960, 150], Y_W = 1500, G = 2600, V0 = 150;
+const POOP_EMERGE = seq([['poopE1', 6], ['poopE2', 5], ['poopE3', 5], ['poopE4', 5]]);
+const T1 = { det: POOP_EMERGE.duration, dur: 3.3 };
+const fallY = t => t <= 0 ? BUTT1[1] : BUTT1[1] + V0 * t + .5 * G * t * t; // верх какашки
+T1.hit = T1.det + (-V0 + Math.sqrt(V0 * V0 + 2 * G * (Y_W - 258 - BUTT1[1]))) / G;
+T1.vHit = V0 + G * (T1.hit - T1.det);
+T1.bubble = T1.hit + .5; T1.bulge = T1.hit + .85; T1.jet = T1.hit + 1.12;
+const SPLASH = seq([['crown1', 2], ['crown2', 3], ['crown3', 3], ['crown4', 4], ['crown5', 3]]);
+const JET = seq([['jet1', 2], ['jet2', 2], ['jet3', 2], ['jet4', 24]]);
+function camera1(tau) { // плавный старт и мягкая остановка над водой
+  if (tau < T1.det) return 0;
+  const raw = fallY(tau - T1.det - .06) - 330, a = 120;
+  let y = raw > a ? raw : raw < -a ? 0 : (raw + a) ** 2 / (4 * a);
+  return y < 640 ? y : 720 - 80 * Math.exp(-(y - 640) / 80);
+}
+function shot1(c, tau) {
+  paper(c, C.paper, null, 87);
+  const camY = camera1(tau), t2 = twos(tau);
+  c.save(); c.translate(0, -camY);
+  // какашка (за попой, пока висит)
+  let pid, py;
+  if (tau < T1.det) { pid = POOP_EMERGE.at(tau).id; py = BUTT1[1]; }
+  else if (tau < T1.hit) { pid = tau - T1.det < .14 ? 'poopDrop' : 'poopFall'; py = fallY(tau - T1.det); }
+  else { const u = tau - T1.hit; pid = 'poopDrop'; py = Y_W - 258 + T1.vHit * (1 - Math.exp(-7 * u)) / 7; }
+  const sinkA = tau < T1.hit ? 1 : clamp(1 - (tau - T1.hit) / 1.2, 0, 1);
+  if (sinkA > 0) drawSpr(c, pid, BUTT1[0], py, { alpha: sinkA });
+  if (camY < 900) drawSpr(c, 'butt', ...BUTT1);
+  // линии скорости — пока камера едет за падением
+  if (tau > T1.det + .2 && tau < T1.hit) drawSpr(c, 'speed' + 'ABC'[Math.floor(tau * 12) % 3], BUTT1[0], fallY(tau - T1.det) + 120, { alpha: .9 });
+  // вода: гладь → купол → струя
+  const wid = tau < T1.bulge ? 'water' : tau < T1.bulge + .14 ? 'bulge1' : tau < T1.jet ? 'bulge2' : 'water';
+  if (Y_W - camY < H + 40) drawSpr(c, wid, 0, Y_W);
+  // круги
+  const rt = tau - T1.hit - .18;
+  if (rt >= 0 && rt < .9) drawSpr(c, 'ripple' + Math.min(3, Math.floor(rt / .2)), 960, Y_W + 8, { alpha: 1 - rt / .9 });
+  // корона брызг
+  const sp = tau - T1.hit;
+  if (sp >= 0 && sp < SPLASH.duration) drawSpr(c, SPLASH.at(sp).id, 960, Y_W, { scale: 1.6 });
+  // капли: баллистика на двоечках
+  const dt = t2 - T1.hit;
+  if (dt > 0 && dt < 1) for (let k = 0; k < 9; k++) {
+    const vx = (hash(k, 21) - .5) * 900, vy = 700 + hash(k, 22) * 700, y = Y_W - 60 - vy * dt + .5 * 2600 * dt * dt;
+    if (y > Y_W || dt < .06) continue;
+    drawSpr(c, dt < .25 ? 'drop' : 'dropR', 960 + vx * dt, y, { rot: Math.atan2(vx, vy - 2600 * dt) * (dt < .25 ? -1 : 0) });
+  }
+  // бульки
+  for (const [t0, x] of [[T1.bubble, 930], [T1.bubble + .2, 1000]]) {
+    const u = tau - t0;
+    if (u >= 0 && u < .18) drawSpr(c, 'bubble', x, Y_W - 6 - u * 60);
+    else if (u >= .18 && u < .3) drawSpr(c, 'pop', x, Y_W - 18);
+  }
+  // струя
+  const jt = tau - T1.jet;
+  if (jt >= 0) drawSpr(c, JET.at(jt).id, 960, Y_W + 4);
+  c.restore();
+  grainOver(c, 11);
+}
+
+// ── План 2: Посейдон целует и тычет ──────────────────────────────────────────
+const T2 = { dur: 3.0, reach: .3, kiss: .42, back: 1.05, smug: 1.2, hand: 1.25, handUp: 1.6, poke: 1.95, touch: 2.1, unpoke: 2.8 };
+const BUTT2 = [960, 40], KISS = [1252, 160], PS = { s: 1.18, rot: .78, smug: [1530, 400] };
+// корень позы поцелуя: кончик губ ровно в точке касания
+PS.kiss = (() => { const [x, y] = D.psKiss.lips, c = Math.cos(PS.rot), s = Math.sin(PS.rot); return [KISS[0] - PS.s * (x * c - y * s), KISS[1] - PS.s * (x * s + y * c)]; })();
+function shot2(c, tau) {
+  paper(c, C.paper, null, 88);
+  const t2 = twos(tau);
+  // попа подпрыгивает от касаний
+  const jig = (t, t0) => t >= t0 && t < t0 + .4 ? -10 * Math.exp(-(t - t0) * 9) * Math.cos((t - t0) * 40) : 0;
+  const pokeK = t2 >= T2.touch && t2 < T2.unpoke ? Math.floor((t2 - T2.touch) / .16) : -1;
+  const by = BUTT2[1] + jig(t2, T2.kiss) + jig(t2, T2.touch) + (pokeK >= 0 ? (pokeK % 2 ? -4 : 0) : 0);
+  // Посейдон: подъём → касание → откат с ухмылкой
+  let pid, oy = 0, k = 0; // k: 0 — поза поцелуя, 1 — откинулся с ухмылкой
+  if (tau < T2.reach) { pid = 'psRise'; oy = 700 * (1 - easeOut(t2 / T2.reach)) + 40; }
+  else if (tau < T2.kiss) { pid = 'psReach'; oy = 40 * (1 - (t2 - T2.reach) / (T2.kiss - T2.reach)); }
+  else if (tau < T2.back) pid = 'psKiss';
+  else { pid = tau < T2.smug ? 'psKiss' : 'psSmug'; k = easeOut(clamp((t2 - T2.back) / .25, 0, 1)); oy = 6 * Math.sin((t2 - T2.back) * 5) * k; }
+  const [px, py] = PS.kiss.map((v, i) => lerp(v, PS.smug[i], k));
+  drawSpr(c, pid, px, py + oy, { scale: PS.s, rot: PS.rot });
+  // яички выходят из-под ягодиц: рисуются до попы, верх прячется за щеками
+  const side = pokeK < 0 ? '' : pokeK % 2 ? 'R' : 'L'; // по очереди: левое, правое, левое…
+  drawSpr(c, 'balls' + side, BUTT2[0], by + 4, { scale: 1.15 });
+  // мокрые следы: на каждом яичке после первого касания его пальцем, едут вместе с поджатием
+  for (const [s, x, t0] of [['L', -40, T2.touch], ['R', 44, T2.touch + .16]])
+    if (t2 >= t0) drawSpr(c, 'wet', BUTT2[0] + x * 1.15, by + 4 + 1.15 * 166 * (side === s ? .95 : 1), { scale: .6, alpha: .85 });
+  drawSpr(c, 'butt', BUTT2[0], by);
+  // мокрое пятно от поцелуя, «чмок», сердечко
+  const KX = KISS[0], KY = by - BUTT2[1] + KISS[1] + 10;
+  if (tau >= T2.kiss) drawSpr(c, 'wet', KX, KY - 4, { alpha: .85 });
+  if (tau >= T2.kiss && tau < T2.kiss + .3) drawSpr(c, 'smooch', KX, KY + 10);
+  const ht = t2 - T2.kiss - .15;
+  if (ht >= 0 && ht < .9) drawSpr(c, 'heart', KX - 120 - ht * 60, KY + 120 - ht * 40, { alpha: 1 - Math.max(0, ht - .6) / .3, scale: .9 + ht * .3 });
+  // рука: «виктория» снизу; щекочет по очереди — один палец тянется к своему яичку, другой поджат
+  const HX = BUTT2[0], handY = { low: 1400, v: 700, touch: 558 + by - BUTT2[1] };
+  if (tau >= T2.hand) {
+    let hy;
+    if (t2 < T2.handUp) hy = lerp(handY.low, handY.v, easeOut((t2 - T2.hand) / (T2.handUp - T2.hand)));
+    else if (t2 < T2.poke) hy = handY.v + 6 * Math.sin((t2 - T2.handUp) * 16);
+    else if (t2 < T2.touch) hy = lerp(handY.v, handY.touch, easeIn((t2 - T2.poke) / (T2.touch - T2.poke)));
+    else if (t2 < T2.unpoke) hy = handY.touch;
+    else hy = lerp(handY.touch + 20, handY.low, easeIn(clamp((t2 - T2.unpoke) / .35, 0, 1)));
+    drawSpr(c, 'handV' + (t2 < T2.unpoke ? side : ''), HX, hy, { scale: 1.1 });
+  }
+  if (side) drawSpr(c, 'boop', HX + (side === 'R' ? 90 : -90), by + 235, { scale: .8, rot: side === 'R' ? .6 : -.6 });
+  grainOver(c, 12);
+}
+
+// ── План 3: лицо — блаженство → шок ─────────────────────────────────────────
+const T3 = { dur: 1.9, shock: .62 };
+function shot3(c, tau) {
+  paper(c, C.pink, null, 89);
+  const t2 = twos(tau), shocked = tau >= T3.shock, u = t2 - T3.shock;
+  const dx = shocked && u < .4 ? (Math.floor(u * 12) % 2 ? 7 : -7) : 0;
+  const dy = shocked ? -18 * Math.exp(-u * 8) : 4 * Math.sin(t2 * 4);
+  drawSpr(c, shocked ? 'shock' : 'calm', CX + dx, CY + 70 + dy, { scale: 1.3 });
+  if (shocked && u < .35) drawSpr(c, 'shockLines', CX, CY + 70, { scale: 1.3, alpha: 1 - u / .35 });
+  if (shocked && u > .12) drawSpr(c, u > .3 ? 'sweat2' : 'sweat1', CX + dx, CY + 70, { scale: 1.3 });
+  grainOver(c, 13);
+}
+
+// ── План 4: Посейдон в короне подмигивает и уходит в глубину ─────────────────
+const T4 = { dur: 3.0, wink: 1.0, unwink: 1.45, sink: 1.6, sunk: 2.6 };
+function shot4(c, tau) {
+  paper(c, C.deep, null, 90);
+  const t2 = twos(tau);
+  // световые полосы глубины
+  c.save(); c.globalAlpha = .07; c.fillStyle = '#bff0ff';
+  for (let k = 0; k < 4; k++) { c.beginPath(); c.moveTo(300 + k * 420, -10); c.lineTo(420 + k * 420, -10); c.lineTo(160 + k * 420, H + 10); c.lineTo(80 + k * 420, H + 10); c.fill(); }
+  c.restore();
+  const id = tau >= T4.wink && tau < T4.unwink ? 'kingWink' : Math.floor(tau / (4 / 24)) % 2 ? 'kingB' : 'kingA';
+  const u = clamp((t2 - T4.sink) / (T4.sunk - T4.sink), 0, 1), k = easeIn(u);
+  if (u < 1) drawSpr(c, id, CX, 560 + k * 760 + (tau < T4.sink ? 4 * Math.sin(t2 * 3) : 0), { scale: .95 * (1 - .45 * k) });
+  if (tau >= T4.wink && tau < T4.wink + .35) drawSpr(c, 'sparkle', CX - 150, 400, { scale: .7 + (t2 - T4.wink) * 1.2 });
+  // пузыри при погружении
+  for (let b = 0; b < 8; b++) {
+    const bt = t2 - T4.sink - b * .1;
+    if (bt < 0 || bt > 1.6) continue;
+    drawSpr(c, 'kBubble', CX + (hash(b, 31) - .5) * 520 + Math.sin(bt * 6 + b) * 14, 900 - bt * 520 - hash(b, 32) * 120, { scale: .6 + hash(b, 33) * .8, alpha: 1 - bt / 1.6 });
+  }
+  grainOver(c, 14, .07);
+}
+
+const TL = { s1: 0, s2: T1.dur, s3: T1.dur + T2.dur, s4: T1.dur + T2.dur + T3.dur };
+const DUR = TL.s4 + T4.dur;
+defineFilm({
+  palette: { ...PALETTES.pencilMinimal, paper: C.paper },
+  format: { ar: '16:9', width: 1920 }, fps: 24,
+  timeline: [
+    { name: 'plop', dur: T1.dur, fn: shot1 },
+    { name: 'kiss', dur: T2.dur, fn: shot2 },
+    { name: 'face', dur: T3.dur, fn: shot3 },
+    { name: 'king', dur: T4.dur, fn: shot4 },
+  ],
+  score,
+});
+
+// Автоплей: стартуем сразу и без звука (браузеры требуют жест для аудио —
+// кнопка «sound: off» в панели включает его настоящим кликом). Плеер лупит сам.
+if (!location.search.includes('bare'))
+  setTimeout(() => { const b = document.getElementById('play'); if (b && b.textContent === 'play') b.click(); }, 80);
+
+// Живой звук, синхронный с циклом. Штатный плеер играет score лишь один раз
+// и только если звук был включён ДО нажатия play. Вместо спрятанной в панели
+// кнопки: (1) пробуем включить звук сразу — если браузер разрешает, посетитель
+// не видит ничего лишнего; (2) иначе показываем fixed-плашку «включить звук»
+// поверх кадра и включаем звук первым же кликом/тапом в любом месте страницы.
+// Ручное выключение в панели уважается (авто больше не возвращает звук).
+// Score перепланируется по аудио-часам на каждом витке; включение звука
+// перезапускает цикл с нуля, чтобы звук и картинка шли вместе.
+(() => {
+  if (location.search.includes('bare')) return;
+  const playBtn = document.getElementById('play'), sndBtn = document.getElementById('snd'), scrub = document.getElementById('scrub');
+  if (!playBtn || !sndBtn || !scrub) return;
+  const hint = document.createElement('button');
+  hint.textContent = 'включить звук';
+  hint.style.cssText = 'position:fixed;top:14px;right:14px;z-index:9;background:#f5f0e5;color:#423930;border:2px solid #423930;border-radius:10px;padding:8px 16px;font:600 15px system-ui,sans-serif;cursor:pointer;box-shadow:2px 3px 0 rgba(66,57,48,.35)';
+  document.body.appendChild(hint);
+  let ac = null, feed = null, timer = null, nextT0 = 0, on = false, userMuted = false;
+  const playing = () => playBtn.textContent === 'pause';
+  const kill = () => { if (feed) { try { feed.disconnect(); } catch (e) {} } feed = null; if (timer) { clearInterval(timer); timer = null; } };
+  const schedule = t => { score(ac, t, feed); nextT0 = t + DUR; };
+  const start = () => {
+    kill(); if (!on || !ac) return;
+    feed = ac.createGain(); feed.connect(ac.destination);
+    schedule(ac.currentTime + .08);
+    timer = setInterval(() => { if (nextT0 < ac.currentTime + DUR) schedule(nextT0); }, 250);
+  };
+  const setOn = v => { on = v; sndBtn.textContent = 'sound: ' + (on ? 'on' : 'off'); hint.style.display = on ? 'none' : ''; };
+  const enable = () => {
+    if (on) return;
+    userMuted = false; setOn(true);
+    ac = ac || new AudioContext();
+    ac.resume().then(() => { if (playing()) { playBtn.click(); playBtn.click(); } else start(); }); // рестарт цикла вместе со звуком
+  };
+  sndBtn.onclick = () => { if (on) { userMuted = true; setOn(false); kill(); } else enable(); };
+  hint.onclick = () => enable();
+  playBtn.addEventListener('click', () => { if (playing()) { if (on && ac) start(); } else kill(); });
+  scrub.addEventListener('input', kill);
+  // любой первый клик/тап/клавиша вне панели плеера включает звук
+  const wake = e => { if (!on && !userMuted && !(e.target.closest && e.target.closest('.bar'))) enable(); };
+  addEventListener('pointerdown', wake);
+  addEventListener('keydown', wake);
+  // попытка честного автозвука: повторным посетителям/разрешающим браузерам можно
+  setTimeout(async () => {
+    try {
+      ac = ac || new AudioContext();
+      await Promise.race([ac.resume(), new Promise(r => setTimeout(r, 400))]);
+      if (ac.state === 'running' && !on && !userMuted) enable();
+    } catch (e) {}
+  }, 350);
+})();
+
+// ── Саундтрек ─────────────────────────────────────────────────────────────────
+function score(ac, t0, dest) {
+  const master = ac.createGain(); master.gain.setValueAtTime(.72, t0); master.gain.setValueAtTime(.72, t0 + DUR - .5); master.gain.linearRampToValueAtTime(0, t0 + DUR);
+  const comp = ac.createDynamicsCompressor(); comp.threshold.value = -16; comp.knee.value = 20; comp.ratio.value = 2.6; comp.attack.value = .015; comp.release.value = .25;
+  master.connect(comp); comp.connect(dest);
+  const hz = n => 440 * 2 ** ((n - 69) / 12);
+  const send = (node, pan = 0) => { const p = ac.createStereoPanner(); p.pan.value = pan; node.connect(p); p.connect(master); };
+  function glide(t, f0, f1, d, vol, type = 'sine', pan = 0) {
+    const o = ac.createOscillator(); o.type = type;
+    o.frequency.setValueAtTime(f0, t0 + t); o.frequency.exponentialRampToValueAtTime(f1, t0 + t + d);
+    const e = ac.createGain(); e.gain.setValueAtTime(0, t0 + t); e.gain.linearRampToValueAtTime(vol, t0 + t + .015); e.gain.exponentialRampToValueAtTime(.0008, t0 + t + d);
+    o.connect(e); send(e, pan); o.start(t0 + t); o.stop(t0 + t + d + .05);
+  }
+  function noise(t, d, vol, type, f0, f1, q = 1, seed = 1) {
+    const src = ac.createBufferSource(), buf = ac.createBuffer(1, Math.ceil(ac.sampleRate * d), ac.sampleRate), ch = buf.getChannelData(0), r = rng(seed);
+    for (let i = 0; i < ch.length; i++) ch[i] = (r() * 2 - 1) * Math.sin(Math.PI * i / ch.length);
+    const f = ac.createBiquadFilter(); f.type = type; f.Q.value = q; f.frequency.setValueAtTime(f0, t0 + t); f.frequency.exponentialRampToValueAtTime(f1, t0 + t + d);
+    const g = ac.createGain(); g.gain.value = vol; src.buffer = buf; src.connect(f); f.connect(g); send(g); src.start(t0 + t);
+  }
+  function brass(t, notes, d, vol) { // мягкие медные: пила через фильтр с медленной атакой
+    for (const n of notes) {
+      const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.value = hz(n);
+      const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(400, t0 + t); f.frequency.linearRampToValueAtTime(1500, t0 + t + .25);
+      const e = ac.createGain(); e.gain.setValueAtTime(0, t0 + t); e.gain.linearRampToValueAtTime(vol, t0 + t + .12); e.gain.setValueAtTime(vol, t0 + t + d * .7); e.gain.exponentialRampToValueAtTime(.0008, t0 + t + d);
+      o.connect(f); f.connect(e); send(e, (n % 7 - 3) * .08); o.start(t0 + t); o.stop(t0 + t + d + .05);
+    }
+  }
+  const harp = (t, notes, step = .045, vol = .1) => notes.forEach((n, k) => note(ac, master, hz(n), t0, t + k * step, .9, 'triangle', vol));
+  // I: натуга, отрыв, падение, плюх
+  { const o = ac.createOscillator(), e = ac.createGain(); o.type = 'triangle'; o.frequency.setValueAtTime(48, t0); o.frequency.linearRampToValueAtTime(72, t0 + T1.det);
+    e.gain.setValueAtTime(0, t0); e.gain.linearRampToValueAtTime(.12, t0 + T1.det - .05); e.gain.linearRampToValueAtTime(0, t0 + T1.det + .05);
+    o.connect(e); send(e); o.start(t0); o.stop(t0 + T1.det + .1); }
+  [.2, .4, .6].forEach((t, k) => glide(t, 160 - k * 15, 90, .12, .14, 'sawtooth'));      // выдавливание
+  glide(T1.det - .02, 520, 140, .09, .22); noise(T1.det - .02, .08, .25, 'lowpass', 900, 300, 1, 3); // шлёп-отрыв
+  glide(T1.det + .1, hz(88), hz(52), T1.hit - T1.det - .1, .08);                         // свист падения
+  glide(T1.hit, 700, 140, .16, .38); noise(T1.hit, .5, .45, 'lowpass', 2400, 300, .8, 5);  // ПЛЮХ
+  { const o = ac.createOscillator(), e = ac.createGain(); o.frequency.setValueAtTime(90, t0 + T1.hit); o.frequency.exponentialRampToValueAtTime(40, t0 + T1.hit + .25);
+    e.gain.setValueAtTime(.4, t0 + T1.hit); e.gain.exponentialRampToValueAtTime(.0008, t0 + T1.hit + .4); o.connect(e); send(e); o.start(t0 + T1.hit); o.stop(t0 + T1.hit + .45); }
+  for (let k = 0; k < 6; k++) glide(T1.hit + .25 + k * .07, 1400 + hash(k, 41) * 900, 2600 + hash(k, 42) * 600, .05, .05, 'sine', (hash(k, 43) - .5)); // капли
+  glide(T1.bubble + .15, 280, 900, .08, .16); glide(T1.bubble + .35, 320, 1000, .08, .14);  // бульк-бульк
+  noise(T1.bulge, T1.jet - T1.bulge + .1, .2, 'lowpass', 150, 900, 2, 7);                  // рокот
+  noise(T1.jet, .9, .35, 'bandpass', 400, 3500, 1.2, 8);                                     // струя
+  harp(T1.jet + .15, [60, 64, 67, 71, 72, 76, 79, 83, 84], .04, .09);                        // волшебство
+  // II: поцелуй, ухмылка, виктория, тык
+  const s2 = TL.s2;
+  harp(s2 + .05, [72, 76, 79, 84], .06, .07);
+  noise(s2 + T2.kiss, .03, .5, 'highpass', 2000, 3000, .7, 9);                              // чмок
+  glide(s2 + T2.kiss + .02, 500, 1300, .14, .2);
+  note(ac, master, hz(84), t0, s2 + T2.kiss + .2, .4, 'sine', .07); note(ac, master, hz(88), t0, s2 + T2.kiss + .32, .5, 'sine', .06);
+  [[s2 + T2.smug + .05, 67], [s2 + T2.smug + .2, 64]].forEach(([t, n]) => note(ac, master, hz(n), t0, t, .3, 'triangle', .1)); // хм-хм
+  harp(s2 + T2.handUp - .1, [79, 83, 86], .05, .07);
+  glide(s2 + T2.touch, 300, 760, .1, .3); noise(s2 + T2.touch, .04, .2, 'lowpass', 900, 400, 1, 10); // БУП
+  for (let k = 1; k * .16 < T2.unpoke - T2.touch; k++) glide(s2 + T2.touch + k * .16, k % 2 ? 420 : 340, k % 2 ? 300 : 520, .08, .12, 'sine', k % 2 ? .3 : -.3); // щекотка по очереди
+  // III: блаженство → шок
+  const s3 = TL.s3;
+  [60, 64, 67].forEach(n => note(ac, master, hz(n), t0, s3 + .02, .6, 'sine', .06));
+  brass(s3 + T3.shock, [49, 55, 61, 62], .7, .07); noise(s3 + T3.shock, .3, .3, 'bandpass', 800, 3000, .6, 11);
+  glide(s3 + T3.shock + .05, hz(70), hz(94), .5, .07);
+  // IV: величие, подмигивание, погружение, титр
+  const s4 = TL.s4;
+  brass(s4 + .02, [48, 55, 60, 64], 1.0, .06); brass(s4 + .5, [53, 57, 60, 65], .9, .055);
+  note(ac, master, hz(96), t0, s4 + T4.wink + .02, .35, 'sine', .08); note(ac, master, hz(100), t0, s4 + T4.wink + .1, .4, 'sine', .06);
+  for (let k = 0; k < 8; k++) glide(s4 + T4.sink + k * .11, 220 + hash(k, 51) * 200, 700 + hash(k, 52) * 400, .07, .09, 'sine', (hash(k, 53) - .5) * .6);
+  brass(s4 + T4.sink, [55, 59, 62], .8, .045);
+  brass(s4 + T4.sunk - .2, [48, 52, 55, 60], .6, .05);
+}
+</script>
